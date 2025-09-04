@@ -47,12 +47,12 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot, query, setDoc, doc, setLogLevel, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, setDoc, doc, setLogLevel, getDoc, deleteDoc, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Global variables provided by the environment
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         const firebaseConfig = {
-apiKey: "AIzaSyBhWsjTfF2191NGV9VRT_L2PjPxO8Fm8js",
+  apiKey: "AIzaSyBhWsjTfF2191NGV9VRT_L2PjPxO8Fm8js",
   authDomain: "health-tracker-d1bad.firebaseapp.com",
   projectId: "health-tracker-d1bad",
   storageBucket: "health-tracker-d1bad.firebasestorage.app",
@@ -60,7 +60,6 @@ apiKey: "AIzaSyBhWsjTfF2191NGV9VRT_L2PjPxO8Fm8js",
   appId: "1:1041512043894:web:9ba1494143fe863ed71657",
   measurementId: "G-SJCER4MWR4"
 };
-
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
         // Initialize Firebase services
@@ -144,17 +143,15 @@ apiKey: "AIzaSyBhWsjTfF2191NGV9VRT_L2PjPxO8Fm8js",
 
             // This is also a public collection, with readings tagged by userId
             const readingsCollectionRef = collection(db, `artifacts/${appId}/public/data/healthReadings`);
-            const q = query(readingsCollectionRef);
+            const q = query(readingsCollectionRef, where("userId", "==", userId));
 
             unsubscribeReadings = onSnapshot(q, (snapshot) => {
-                const filteredReadings = [];
+                allReadings = [];
                 snapshot.forEach(doc => {
                     const reading = { id: doc.id, ...doc.data() };
-                    if (reading.userId === userId) {
-                        filteredReadings.push(reading);
-                    }
+                    allReadings.push(reading);
                 });
-                allReadings = filteredReadings.sort((a, b) => b.timestamp - a.timestamp);
+                allReadings.sort((a, b) => b.timestamp - a.timestamp);
                 displayReadings(allReadings);
                 updateChart(allReadings);
             }, (error) => {
@@ -181,6 +178,18 @@ apiKey: "AIzaSyBhWsjTfF2191NGV9VRT_L2PjPxO8Fm8js",
             } catch (e) {
                 console.error("Error adding document: ", e);
                 showMessageModal("Save Error", "Failed to save reading. Please check permissions and try again.");
+            }
+        }
+        
+        // Function to delete a reading from Firestore
+        async function deleteReading(readingId) {
+            try {
+                await deleteDoc(doc(db, `artifacts/${appId}/public/data/healthReadings`, readingId));
+                console.log("Reading deleted successfully!");
+                hideModal('confirm-delete-modal');
+            } catch (e) {
+                console.error("Error deleting document: ", e);
+                showMessageModal("Delete Error", "Failed to delete reading. Please check permissions and try again.");
             }
         }
 
@@ -286,6 +295,8 @@ apiKey: "AIzaSyBhWsjTfF2191NGV9VRT_L2PjPxO8Fm8js",
                     hideModal(e.target.closest('.modal').id);
                 });
             });
+            
+            document.getElementById('cancel-delete').addEventListener('click', () => hideModal('confirm-delete-modal'));
 
             document.getElementById('submit-bp').addEventListener('click', () => {
                 const systolic = document.getElementById('systolic').value;
@@ -452,7 +463,7 @@ apiKey: "AIzaSyBhWsjTfF2191NGV9VRT_L2PjPxO8Fm8js",
             const tableBody = document.getElementById('readings-table-body');
             tableBody.innerHTML = '';
             if (readings.length === 0) {
-                tableBody.innerHTML = '<tr><td colspan="4" class="py-4 text-center text-gray-500">No readings found.</td></tr>';
+                tableBody.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-gray-500">No readings found.</td></tr>';
                 return;
             }
             readings.forEach(reading => {
@@ -476,10 +487,26 @@ apiKey: "AIzaSyBhWsjTfF2191NGV9VRT_L2PjPxO8Fm8js",
                 const timeCell = document.createElement('td');
                 timeCell.className = 'py-3 px-4 text-sm text-gray-600';
                 timeCell.textContent = new Date(reading.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+                
+                const actionsCell = document.createElement('td');
+                actionsCell.className = 'py-3 px-4 text-sm text-right';
+                const deleteButton = document.createElement('button');
+                deleteButton.className = 'text-red-500 hover:text-red-700 transition-colors duration-200';
+                deleteButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                          <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm6 0a1 1 0 112 0v6a1 1 0 11-2 0V8z" clip-rule="evenodd" />
+                                        </svg>`;
+                deleteButton.onclick = () => {
+                    const confirmBtn = document.getElementById('confirm-delete');
+                    confirmBtn.onclick = () => deleteReading(reading.id);
+                    showModal('confirm-delete-modal');
+                };
+                actionsCell.appendChild(deleteButton);
+                
                 row.appendChild(typeCell);
                 row.appendChild(valueCell);
                 row.appendChild(dateCell);
                 row.appendChild(timeCell);
+                row.appendChild(actionsCell);
                 tableBody.appendChild(row);
             });
         }
@@ -588,6 +615,7 @@ apiKey: "AIzaSyBhWsjTfF2191NGV9VRT_L2PjPxO8Fm8js",
                             <th scope="col" class="py-3 px-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Value</th>
                             <th scope="col" class="py-3 px-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Date</th>
                             <th scope="col" class="py-3 px-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Time</th>
+                            <th scope="col" class="py-3 px-4 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider no-print">Actions</th>
                         </tr>
                     </thead>
                     <tbody id="readings-table-body" class="bg-white divide-y divide-gray-200">
@@ -676,6 +704,22 @@ apiKey: "AIzaSyBhWsjTfF2191NGV9VRT_L2PjPxO8Fm8js",
             <button class="close-modal-btn w-full bg-indigo-600 text-white font-bold py-3 px-6 rounded-xl shadow-lg hover:bg-indigo-700 transition-colors">
                 OK
             </button>
+        </div>
+    </div>
+
+    <!-- Confirm Delete Modal -->
+    <div id="confirm-delete-modal" class="modal fixed inset-0 z-50 flex items-center justify-center bg-gray-900 bg-opacity-50 hidden no-print">
+        <div class="bg-white rounded-3xl p-8 md:p-10 max-w-lg w-full shadow-2xl relative transform scale-100 text-center">
+            <h3 class="text-2xl font-bold mb-4 text-gray-800">Confirm Deletion</h3>
+            <p class="text-gray-600 mb-6">Are you sure you want to permanently delete this record? This action cannot be undone.</p>
+            <div class="flex gap-4">
+                <button id="cancel-delete" class="flex-1 bg-gray-300 text-gray-800 font-bold py-3 px-6 rounded-xl shadow-lg hover:bg-gray-400 transition-colors">
+                    Cancel
+                </button>
+                <button id="confirm-delete" class="flex-1 bg-red-600 text-white font-bold py-3 px-6 rounded-xl shadow-lg hover:bg-red-700 transition-colors">
+                    Delete
+                </button>
+            </div>
         </div>
     </div>
 </body>
