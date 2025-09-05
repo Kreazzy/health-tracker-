@@ -38,6 +38,15 @@
             #chart-section, #table-section {
                 display: block !important;
             }
+            /* Show user name in print */
+            .print-header {
+                display: block !important;
+                text-align: center;
+                margin-bottom: 20px;
+                font-size: 18px;
+                font-weight: bold;
+                color: #374151;
+            }
         }
     </style>
 </head>
@@ -106,7 +115,9 @@
                     console.log("User authenticated with UID:", user.uid);
                     startListeningForReadings(user.uid);
                     startListeningForMedications(user.uid);
-                    document.getElementById('current-user-name').textContent = user.email || 'Anonymous';
+                    const userEmail = user.email || 'Anonymous';
+                    document.getElementById('current-user-name').textContent = userEmail;
+                    document.getElementById('print-user-name').textContent = userEmail;
                     showScreen('dashboard-screen');
                 } else {
                     console.log("No user authenticated.");
@@ -716,6 +727,11 @@
 
     <!-- Main Dashboard Screen -->
     <div id="dashboard-screen" class="screen hidden max-w-4xl w-full mx-auto bg-white rounded-3xl shadow-2xl p-6 md:p-10 border border-gray-200 print-area">
+        <!-- Print Header (only visible when printing) -->
+        <div class="print-header hidden">
+            <div>Health Report for: <span id="print-user-name"></span></div>
+        </div>
+        
         <!-- Header Section -->
         <div class="flex flex-col md:flex-row items-center justify-between pb-6 border-b border-gray-200 mb-6 no-print">
             <h1 class="text-3xl md:text-4xl font-extrabold text-indigo-700 mb-2 md:mb-0">
