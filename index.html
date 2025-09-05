@@ -46,104 +46,176 @@
     <!-- Firebase SDKs - Loaded via CDN -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot, query, setDoc, doc, setLogLevel, getDoc, deleteDoc, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, signInWithCustomToken, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, where, setLogLevel, deleteDoc, doc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Global variables provided by the environment
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         const firebaseConfig = {
-  apiKey: "AIzaSyBhWsjTfF2191NGV9VRT_L2PjPxO8Fm8js",
-  authDomain: "health-tracker-d1bad.firebaseapp.com",
-  projectId: "health-tracker-d1bad",
-  storageBucket: "health-tracker-d1bad.firebasestorage.app",
-  messagingSenderId: "1041512043894",
-  appId: "1:1041512043894:web:9ba1494143fe863ed71657",
-  measurementId: "G-SJCER4MWR4"
-};
+            apiKey: "AIzaSyBhWsjTfF2191NGV9VRT_L2PjPxO8Fm8js",
+            authDomain: "health-tracker-d1bad.firebaseapp.com",
+            projectId: "health-tracker-d1bad",
+            storageBucket: "health-tracker-d1bad.firebasestorage.app",
+            messagingSenderId: "1041512043894",
+            appId: "1:1041512043894:web:9ba1494143fe863ed71657",
+            measurementId: "G-SJCER4MWR4"
+        };
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
         // Initialize Firebase services
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
+        let app, auth, db;
+        try {
+            app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
+        } catch (e) {
+            console.error("Firebase Initialization Error:", e);
+        }
 
         // Set log level for debugging
-        setLogLevel('Debug');
+        if (typeof setLogLevel !== 'undefined') {
+            setLogLevel('Debug');
+        }
 
-        let currentSelectedUserId = null;
-        let currentSelectedUserName = '';
         let unsubscribeReadings = null;
-        let unsubscribeUsers = null;
+        let unsubscribeMedications = null;
         let healthChart = null;
         let allReadings = [];
+        let allMedications = [];
+        
+        // Simple email validation regex
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
         // Function to authenticate the user and start the app
         async function authenticateAndLoadApp() {
+            if (!auth) {
+                showMessageModal("Initialization Error", "Failed to initialize Firebase. Please check your configuration.");
+                return;
+            }
+            
             try {
                 if (initialAuthToken) {
                     await signInWithCustomToken(auth, initialAuthToken);
-                } else {
-                    await signInAnonymously(auth);
                 }
-                onAuthStateChanged(auth, (user) => {
-                    if (user) {
-                        console.log("User authenticated with UID:", user.uid);
-                        startListeningForUsers();
-                    } else {
-                        console.log("No user authenticated.");
-                    }
-                });
             } catch (error) {
-                console.error("Authentication Error:", error);
-                showMessageModal("Authentication Error", "Failed to sign in. Please check your network connection.");
+                console.warn("Custom token sign-in failed. This is expected if using a different Firebase project:", error);
+            }
+            
+            onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    console.log("User authenticated with UID:", user.uid);
+                    startListeningForReadings(user.uid);
+                    startListeningForMedications(user.uid);
+                    document.getElementById('current-user-name').textContent = user.email || 'Anonymous';
+                    showScreen('dashboard-screen');
+                } else {
+                    console.log("No user authenticated.");
+                    showScreen('auth-screen');
+                }
+            });
+        }
+        
+        // Function to create a new user with email and password
+        async function signUp() {
+            const emailInput = document.getElementById('login-email');
+            const passwordInput = document.getElementById('login-password');
+
+            if (!emailInput || !passwordInput) {
+                showMessageModal("Error", "Required form elements are missing. Please try again.");
+                return;
+            }
+
+            const email = emailInput.value;
+            const password = passwordInput.value;
+            
+            if (!email || !password) {
+                showMessageModal("Input Error", "Please enter both email and password.");
+                return;
+            }
+            if (!emailRegex.test(email)) {
+                showMessageModal("Email Format Error", "Please enter a valid email address.");
+                return;
+            }
+            if (password.length < 6) {
+                showMessageModal("Password Error", "Password must be at least 6 characters long.");
+                return;
+            }
+            if (!auth) {
+                showMessageModal("Initialization Error", "Firebase Auth is not initialized.");
+                return;
+            }
+            
+            try {
+                await createUserWithEmailAndPassword(auth, email, password);
+                showMessageModal("Success", "Account created successfully! You are now logged in.");
+            } catch (error) {
+                console.error("Sign-up Error:", error);
+                showMessageModal("Sign-up Error", `Firebase: ${error.message}`);
             }
         }
         
-        // Start listening for changes to the list of user profiles
-        function startListeningForUsers() {
-            if (unsubscribeUsers) {
-                unsubscribeUsers();
-            }
-            
-            // This is a public collection so all users are visible
-            const usersCollectionRef = collection(db, `artifacts/${appId}/public/data/userProfiles`);
-            const q = query(usersCollectionRef);
+        // Function to sign in with email and password
+        async function signIn() {
+            const emailInput = document.getElementById('login-email');
+            const passwordInput = document.getElementById('login-password');
 
-            unsubscribeUsers = onSnapshot(q, (snapshot) => {
-                const users = [];
-                snapshot.forEach(doc => {
-                    users.push({ id: doc.id, ...doc.data() });
-                });
-                displayUsers(users);
-                showScreen('user-list-screen');
-            }, (error) => {
-                console.error("Firestore Error (Users):", error);
-                showMessageModal("Data Error", "Failed to load user profiles due to permissions. Please ensure your authentication token is valid.");
-            });
-        }
-
-        // Function to select a user and navigate to the dashboard
-        function selectUser(user) {
-            currentSelectedUserId = user.id;
-            currentSelectedUserName = user.name;
-            document.getElementById('current-user-name').textContent = `${currentSelectedUserName} (${currentSelectedUserId})`;
-            startListeningForReadings(currentSelectedUserId);
-            showScreen('dashboard-screen');
-        }
-
-        // Function to start real-time listening for readings for a specific user
-        function startListeningForReadings(userId) {
-            if (!userId) {
-                console.error("No user ID selected.");
+            if (!emailInput || !passwordInput) {
+                showMessageModal("Error", "Required form elements are missing. Please try again.");
                 return;
             }
+            
+            const email = emailInput.value;
+            const password = passwordInput.value;
+            
+            if (!email || !password) {
+                showMessageModal("Input Error", "Please enter both email and password.");
+                return;
+            }
+            if (!emailRegex.test(email)) {
+                showMessageModal("Email Format Error", "Please enter a valid email address.");
+                return;
+            }
+            if (!auth) {
+                showMessageModal("Initialization Error", "Firebase Auth is not initialized.");
+                return;
+            }
+            
+            try {
+                await signInWithEmailAndPassword(auth, email, password);
+                showMessageModal("Success", "Signed in successfully!");
+            } catch (error) {
+                console.error("Sign-in Error:", error);
+                showMessageModal("Sign-in Error", `Please check your email and password. Firebase: ${error.message}`);
+            }
+        }
+        
+        // Function to sign out
+        async function signOutUser() {
+            if (!auth) return;
+            try {
+                await signOut(auth);
+                console.log("User signed out.");
+                if (unsubscribeReadings) {
+                    unsubscribeReadings();
+                }
+                if (unsubscribeMedications) {
+                    unsubscribeMedications();
+                }
+            } catch (error) {
+                console.error("Sign-out Error:", error);
+                showMessageModal("Sign-out Error", "Failed to sign out. Please try again.");
+            }
+        }
+
+        // Function to start real-time listening for readings for the current user
+        function startListeningForReadings(userId) {
+            if (!db || !userId) return;
             if (unsubscribeReadings) {
                 unsubscribeReadings();
             }
 
-            // This is also a public collection, with readings tagged by userId
-            const readingsCollectionRef = collection(db, `artifacts/${appId}/public/data/healthReadings`);
-            const q = query(readingsCollectionRef, where("userId", "==", userId));
+            const readingsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/healthReadings`);
+            const q = query(readingsCollectionRef);
 
             unsubscribeReadings = onSnapshot(q, (snapshot) => {
                 allReadings = [];
@@ -155,23 +227,47 @@
                 displayReadings(allReadings);
                 updateChart(allReadings);
             }, (error) => {
-                console.error("Firestore Error:", error);
-                showMessageModal("Data Error", "Failed to load health readings. Please check permissions.");
+                console.error("Firestore Error (Readings):", error);
+                showMessageModal("Data Error", "Failed to load health readings. Please check your account permissions.");
+            });
+        }
+        
+        // Function to start real-time listening for medications for the current user
+        function startListeningForMedications(userId) {
+            if (!db || !userId) return;
+            if (unsubscribeMedications) {
+                unsubscribeMedications();
+            }
+
+            const medsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/medications`);
+            const q = query(medsCollectionRef);
+
+            unsubscribeMedications = onSnapshot(q, (snapshot) => {
+                allMedications = [];
+                snapshot.forEach(doc => {
+                    const medication = { id: doc.id, ...doc.data() };
+                    allMedications.push(medication);
+                });
+                allMedications.sort((a, b) => a.medicationName.localeCompare(b.medicationName));
+                displayMedications(allMedications);
+            }, (error) => {
+                console.error("Firestore Error (Medications):", error);
+                showMessageModal("Data Error", "Failed to load medications. Please check your account permissions.");
             });
         }
 
         // Function to save a reading to Firestore
         async function saveReading(type, data) {
-            if (!currentSelectedUserId) {
-                console.error("No user selected.");
+            const userId = auth.currentUser?.uid;
+            if (!db || !userId) {
+                console.error("No user signed in or Firestore not initialized.");
                 return;
             }
             try {
-                const readingsCollectionRef = collection(db, `artifacts/${appId}/public/data/healthReadings`);
+                const readingsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/healthReadings`);
                 await addDoc(readingsCollectionRef, {
                     type,
                     ...data,
-                    userId: currentSelectedUserId, // Tag reading with the selected user's ID
                     timestamp: Date.now()
                 });
                 console.log("Reading saved successfully!");
@@ -181,10 +277,46 @@
             }
         }
         
-        // Function to delete a reading from Firestore
-        async function deleteReading(readingId) {
+        // Function to save a medication to Firestore
+        async function saveMedication() {
+            const userId = auth.currentUser?.uid;
+            if (!db || !userId) return;
+
+            const medicationName = document.getElementById('medication-name').value;
+            const dosage = document.getElementById('medication-dosage').value;
+            const frequency = document.getElementById('medication-frequency').value;
+
+            if (!medicationName || !dosage || !frequency) {
+                showMessageModal("Input Error", "Please fill in all medication fields.");
+                return;
+            }
+
             try {
-                await deleteDoc(doc(db, `artifacts/${appId}/public/data/healthReadings`, readingId));
+                const medsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/medications`);
+                await addDoc(medsCollectionRef, {
+                    medicationName,
+                    dosage,
+                    frequency,
+                    createdAt: Date.now()
+                });
+                console.log("Medication saved successfully!");
+                hideModal('medication-modal');
+                document.getElementById('medication-name').value = '';
+                document.getElementById('medication-dosage').value = '';
+                document.getElementById('medication-frequency').value = '';
+            } catch (e) {
+                console.error("Error adding medication:", e);
+                showMessageModal("Save Error", "Failed to save medication. Please check permissions and try again.");
+            }
+        }
+        
+        // Function to delete a health reading from Firestore
+        async function deleteReading(readingId) {
+            const userId = auth.currentUser?.uid;
+            if (!db || !userId) return;
+
+            try {
+                await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/healthReadings`, readingId));
                 console.log("Reading deleted successfully!");
                 hideModal('confirm-delete-modal');
             } catch (e) {
@@ -192,48 +324,43 @@
                 showMessageModal("Delete Error", "Failed to delete reading. Please check permissions and try again.");
             }
         }
+        
+        // Function to delete a medication from Firestore
+        async function deleteMedication(medicationId) {
+            const userId = auth.currentUser?.uid;
+            if (!db || !userId) return;
 
-        // Function to create a new user profile
-        async function createNewUser() {
-            const userName = document.getElementById('new-user-name').value.trim();
-            if (!userName) {
-                showMessageModal("Input Required", "User name cannot be empty.");
-                return;
-            }
-            
             try {
-                const usersCollectionRef = collection(db, `artifacts/${appId}/public/data/userProfiles`);
-                const newUserDoc = doc(usersCollectionRef); // Create a new doc with an auto-generated ID
-                await setDoc(newUserDoc, {
-                    id: newUserDoc.id,
-                    name: userName,
-                    createdAt: Date.now()
-                });
-                console.log("New user profile created:", userName);
-                // After creating, automatically select this new user
-                selectUser({ id: newUserDoc.id, name: userName });
-            } catch (error) {
-                console.error("Error creating new user:", error);
-                showMessageModal("Creation Error", "Failed to create new user profile. Please check permissions and try again.");
+                await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/medications`, medicationId));
+                console.log("Medication deleted successfully!");
+                hideModal('confirm-delete-modal');
+            } catch (e) {
+                console.error("Error deleting document: ", e);
+                showMessageModal("Delete Error", "Failed to delete medication. Please check permissions and try again.");
             }
         }
-        
+
         // Function to download data as a text file
         function downloadDataAsTextFile() {
-            if (allReadings.length === 0) {
-                showMessageModal("No Data", "There are no readings to download.");
+            if (allReadings.length === 0 && allMedications.length === 0) {
+                showMessageModal("No Data", "There are no readings or medications to download.");
+                return;
+            }
+            if (!auth.currentUser) {
+                showMessageModal("Authentication Required", "Please sign in to download your data.");
                 return;
             }
 
-            let dataString = 'Health Readings Report\n\n';
-            dataString += `Report for: ${currentSelectedUserName} (ID: ${currentSelectedUserId})\n\n`;
-            dataString += 'Type,Value,Date,Time\n';
+            let dataString = 'Health Records Report\n\n';
+            dataString += `Report for: ${auth.currentUser?.email}\n\n`;
 
+            // Add Health Readings
+            dataString += 'Health Readings\n';
+            dataString += 'Type,Value,Date,Time\n';
             allReadings.forEach(reading => {
                 const date = new Date(reading.timestamp).toLocaleDateString();
                 const time = new Date(reading.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
                 let value = '';
-
                 if (reading.type === 'BP') {
                     value = `${reading.systolic}/${reading.diastolic} mmHg`;
                 } else if (reading.type === 'Pulse') {
@@ -241,19 +368,32 @@
                 } else if (reading.type === 'Sugar') {
                     value = `${reading.sugar} mg/dL (${reading.sugarType})`;
                 }
-
                 dataString += `${reading.type},"${value}",${date},${time}\n`;
             });
+            dataString += '\n';
 
+            // Add Medications
+            dataString += 'Medications\n';
+            dataString += 'Medication Name,Dosage,Frequency\n';
+            allMedications.forEach(med => {
+                dataString += `${med.medicationName},${med.dosage},${med.frequency}\n`;
+            });
+            
             const blob = new Blob([dataString], { type: 'text/plain;charset=utf-8' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `${currentSelectedUserName.replace(/\s/g, '_')}-health-data.txt`;
+            a.download = `health-data.txt`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
+        }
+        
+        // Function to show the Firebase config
+        function showFirebaseConfig() {
+            const configString = JSON.stringify(firebaseConfig, null, 2);
+            showMessageModal("Firebase Configuration", `<pre class="text-left whitespace-pre-wrap">${configString}</pre>`);
         }
 
         // Helper function to switch between screens
@@ -268,22 +408,17 @@
             authenticateAndLoadApp();
 
             // Setup UI interactions
-            // Corrected ID to match the HTML
-            document.getElementById('create-new-user-btn').addEventListener('click', createNewUser);
+            document.getElementById('signup-btn').addEventListener('click', signUp);
+            document.getElementById('login-btn').addEventListener('click', signIn);
+            document.getElementById('sign-out-btn').addEventListener('click', signOutUser);
+            document.getElementById('show-config-btn').addEventListener('click', showFirebaseConfig);
             
-            document.getElementById('switch-user-btn').addEventListener('click', () => {
-                if (unsubscribeReadings) {
-                    unsubscribeReadings();
-                }
-                showScreen('user-list-screen');
-            });
-
             document.getElementById('open-bp-modal').addEventListener('click', () => showModal('bp-modal'));
             document.getElementById('open-pulse-modal').addEventListener('click', () => showModal('pulse-modal'));
             document.getElementById('open-sugar-modal').addEventListener('click', () => showModal('sugar-modal'));
+            document.getElementById('open-medication-modal').addEventListener('click', () => showModal('medication-modal'));
             
             document.getElementById('print-report-btn').addEventListener('click', () => {
-                // Ensure chart view is active before printing
                 document.getElementById('chart-tab-btn').click();
                 window.print();
             });
@@ -327,6 +462,8 @@
                     document.getElementById('sugar').value = '';
                 }
             });
+            
+            document.getElementById('submit-medication').addEventListener('click', saveMedication);
 
             // Tab functionality for charts and tables
             const chartTabBtn = document.getElementById('chart-tab-btn');
@@ -352,27 +489,6 @@
                 chartSection.classList.add('hidden');
             });
         }; // End of window.onload
-
-        function displayUsers(users) {
-            const userListContainer = document.getElementById('user-list-container');
-            userListContainer.innerHTML = '';
-            if (users.length === 0) {
-                userListContainer.innerHTML = '<p class="text-center text-gray-500">No users found. Please create one.</p>';
-            } else {
-                // Sort users by name for a consistent list
-                users.sort((a, b) => a.name.localeCompare(b.name));
-                users.forEach(user => {
-                    const userDiv = document.createElement('button');
-                    userDiv.className = 'w-full p-4 bg-white rounded-lg shadow-md hover:shadow-lg transition-shadow flex flex-col items-start justify-center text-left';
-                    userDiv.innerHTML = `
-                        <span class="text-lg font-semibold text-indigo-700">${user.name}</span>
-                        <span class="text-sm text-gray-500 truncate w-full">ID: ${user.id}</span>
-                    `;
-                    userDiv.addEventListener('click', () => selectUser(user));
-                    userListContainer.appendChild(userDiv);
-                });
-            }
-        }
 
         function updateChart(readings) {
             const bpReadings = readings.filter(r => r.type === 'BP').sort((a, b) => a.timestamp - b.timestamp);
@@ -492,8 +608,8 @@
                 actionsCell.className = 'py-3 px-4 text-sm text-right';
                 const deleteButton = document.createElement('button');
                 deleteButton.className = 'text-red-500 hover:text-red-700 transition-colors duration-200';
-                deleteButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                          <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm6 0a1 1 0 112 0v6a1 1 0 11-2 0V8z" clip-rule="evenodd" />
+                deleteButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                                         </svg>`;
                 deleteButton.onclick = () => {
                     const confirmBtn = document.getElementById('confirm-delete');
@@ -510,6 +626,46 @@
                 tableBody.appendChild(row);
             });
         }
+        
+        // Function to render the medications table
+        function displayMedications(medications) {
+            const tableBody = document.getElementById('medications-table-body');
+            tableBody.innerHTML = '';
+            if (medications.length === 0) {
+                tableBody.innerHTML = '<tr><td colspan="4" class="py-4 text-center text-gray-500">No medications found.</td></tr>';
+                return;
+            }
+            medications.forEach(med => {
+                const row = document.createElement('tr');
+                row.className = 'border-b last:border-b-0';
+                row.innerHTML = `
+                    <td class="py-3 px-4 text-sm font-medium text-gray-900">${med.medicationName}</td>
+                    <td class="py-3 px-4 text-sm text-gray-600">${med.dosage}</td>
+                    <td class="py-3 px-4 text-sm text-gray-600">${med.frequency}</td>
+                    <td class="py-3 px-4 text-right text-sm">
+                        <button class="text-red-500 hover:text-red-700 transition-colors duration-200" onclick="confirmAndDeleteMedication('${med.id}')">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                        </button>
+                    </td>
+                `;
+                tableBody.appendChild(row);
+            });
+        }
+
+        // Global functions for delete confirmation
+        window.confirmAndDeleteReading = (id) => {
+            const confirmBtn = document.getElementById('confirm-delete');
+            confirmBtn.onclick = () => deleteReading(id);
+            showModal('confirm-delete-modal');
+        };
+
+        window.confirmAndDeleteMedication = (id) => {
+            const confirmBtn = document.getElementById('confirm-delete');
+            confirmBtn.onclick = () => deleteMedication(id);
+            showModal('confirm-delete-modal');
+        };
 
         // Helper functions for modals
         function showModal(modalId) {
@@ -526,22 +682,35 @@
 
         function showMessageModal(title, message) {
             document.getElementById('message-modal-title').textContent = title;
-            document.getElementById('message-modal-message').textContent = message;
+            document.getElementById('message-modal-message').innerHTML = message;
             showModal('message-modal');
         }
     </script>
 
-    <!-- User List Screen -->
-    <div id="user-list-screen" class="screen w-full max-w-xl mx-auto bg-white rounded-3xl shadow-2xl p-8 border border-gray-200">
-        <h1 class="text-3xl font-extrabold text-indigo-700 mb-6 text-center">Select a User</h1>
-        
-        <div id="user-list-container" class="space-y-4 mb-6">
-            <!-- User buttons will be inserted here by JavaScript -->
+    <!-- Authentication Screen -->
+    <div id="auth-screen" class="screen w-full max-w-sm mx-auto bg-white rounded-3xl shadow-2xl p-8 border border-gray-200">
+        <h1 class="text-3xl font-extrabold text-indigo-700 mb-6 text-center">Health Manager</h1>
+        <p class="text-center text-gray-600 mb-8">Sign in or create an account to get started.</p>
+
+        <div class="space-y-4">
+            <div>
+                <label for="login-email" class="block text-sm font-medium text-gray-700">Email</label>
+                <input type="email" id="login-email" placeholder="you@example.com" class="w-full p-3 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+            </div>
+            <div>
+                <label for="login-password" class="block text-sm font-medium text-gray-700">Password</label>
+                <input type="password" id="login-password" placeholder="********" class="w-full p-3 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+            </div>
+            <button id="login-btn" class="w-full bg-indigo-600 text-white font-bold py-3 px-6 rounded-xl shadow-lg hover:bg-indigo-700 transition-colors">Sign In</button>
         </div>
 
-        <div class="flex flex-col gap-4">
-            <input type="text" id="new-user-name" placeholder="Enter a new name" class="p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-colors" />
-            <button id="create-new-user-btn" class="bg-indigo-600 text-white font-bold py-3 px-6 rounded-xl shadow-lg hover:bg-indigo-700 transition-colors">Create New User</button>
+        <div class="mt-6 text-center text-gray-500">
+            <p>Don't have an account?</p>
+            <button id="signup-btn" class="text-indigo-600 font-bold hover:underline transition-colors">Sign up</button>
+        </div>
+        
+        <div class="mt-4 text-center">
+            <button id="show-config-btn" class="text-gray-500 text-sm font-medium hover:underline">Show Firebase Config</button>
         </div>
     </div>
 
@@ -550,19 +719,19 @@
         <!-- Header Section -->
         <div class="flex flex-col md:flex-row items-center justify-between pb-6 border-b border-gray-200 mb-6 no-print">
             <h1 class="text-3xl md:text-4xl font-extrabold text-indigo-700 mb-2 md:mb-0">
-                Health Manager
+                Health Dashboard
             </h1>
             <div class="flex items-center space-x-2">
-                <span class="text-gray-600 text-sm">User:</span>
-                <span id="current-user-name" class="text-md text-gray-800 font-bold bg-gray-100 px-3 py-1 rounded-full"></span>
-                <button id="switch-user-btn" class="text-indigo-500 hover:text-indigo-700 transition-colors duration-200 font-medium text-sm">
-                    (Switch User)
+                <span class="text-gray-600 text-sm">Welcome,</span>
+                <span id="current-user-name" class="text-md text-gray-800 font-bold bg-gray-100 px-3 py-1 rounded-full truncate"></span>
+                <button id="sign-out-btn" class="text-red-500 hover:text-red-700 transition-colors duration-200 font-medium text-sm">
+                    (Log Out)
                 </button>
             </div>
         </div>
 
         <!-- User Options Section -->
-        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6 mb-8 no-print">
+        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-6 mb-8 no-print">
             <button id="open-bp-modal" class="flex flex-col items-center justify-center p-6 bg-gradient-to-br from-indigo-500 to-purple-600 text-white rounded-2xl shadow-lg hover:shadow-xl transition-all transform hover:scale-105 duration-300">
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m-2-4h2m-4 0a2 2 0 002 2h2a2 2 0 002-2m4 0V9a2 2 0 00-2-2h-2a2 2 0 00-2 2v10a2 2 0 002 2h2a2 2 0 002-2z" />
@@ -581,7 +750,14 @@
                 </svg>
                 <span class="text-lg font-semibold">Blood Sugar</span>
             </button>
+            <button id="open-medication-modal" class="flex flex-col items-center justify-center p-6 bg-gradient-to-br from-gray-500 to-gray-600 text-white rounded-2xl shadow-lg hover:shadow-xl transition-all transform hover:scale-105 duration-300">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2m-2 4l-3 3m0 0l-3-3m3 3V3" />
+                </svg>
+                <span class="text-lg font-semibold">Medication</span>
+            </button>
         </div>
+
         <!-- Print and Download Buttons -->
         <div class="flex flex-col sm:flex-row gap-4 w-full mb-8 no-print">
             <button id="print-report-btn" class="flex-1 bg-indigo-500 text-white font-bold py-3 px-6 rounded-xl shadow-lg hover:bg-indigo-600 transition-colors duration-200">
@@ -590,6 +766,26 @@
             <button id="download-data-btn" class="flex-1 bg-gray-500 text-white font-bold py-3 px-6 rounded-xl shadow-lg hover:bg-gray-600 transition-colors duration-200">
                 Download Data
             </button>
+        </div>
+        
+        <!-- Medication Table -->
+        <div class="mb-8">
+            <h2 class="text-2xl font-bold text-gray-800 mb-4">Current Medications</h2>
+            <div class="w-full bg-gray-50 rounded-2xl p-4 md:p-6 shadow-inner overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-100">
+                        <tr>
+                            <th scope="col" class="py-3 px-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Medication</th>
+                            <th scope="col" class="py-3 px-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Dosage</th>
+                            <th scope="col" class="py-3 px-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Frequency</th>
+                            <th scope="col" class="py-3 px-4 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider no-print">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="medications-table-body" class="bg-white divide-y divide-gray-200">
+                        <!-- Medication rows will be inserted here by JavaScript -->
+                    </tbody>
+                </table>
+            </div>
         </div>
 
         <!-- Data Visualization Section -->
@@ -693,6 +889,33 @@
                 </div>
             </div>
             <button id="submit-sugar" class="w-full bg-indigo-600 text-white font-bold py-3 px-6 rounded-xl shadow-lg hover:bg-indigo-700 transition-colors">Save Reading</button>
+        </div>
+    </div>
+    
+    <!-- Medication Modal -->
+    <div id="medication-modal" class="modal fixed inset-0 z-50 flex items-center justify-center bg-gray-900 bg-opacity-50 hidden no-print">
+        <div class="bg-white rounded-3xl p-8 md:p-10 max-w-lg w-full shadow-2xl relative transform scale-100">
+            <button class="close-modal-btn absolute top-4 right-4 text-gray-400 hover:text-gray-600 transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+            </button>
+            <h3 class="text-2xl font-bold mb-6 text-gray-800">Add New Medication</h3>
+            <div class="space-y-4 mb-6">
+                <div>
+                    <label for="medication-name" class="block text-sm font-medium text-gray-700">Medication Name</label>
+                    <input type="text" id="medication-name" placeholder="e.g., Aspirin" class="w-full p-3 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                </div>
+                <div>
+                    <label for="medication-dosage" class="block text-sm font-medium text-gray-700">Dosage</label>
+                    <input type="text" id="medication-dosage" placeholder="e.g., 81 mg" class="w-full p-3 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                </div>
+                <div>
+                    <label for="medication-frequency" class="block text-sm font-medium text-gray-700">Frequency</label>
+                    <input type="text" id="medication-frequency" placeholder="e.g., Daily" class="w-full p-3 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                </div>
+            </div>
+            <button id="submit-medication" class="w-full bg-indigo-600 text-white font-bold py-3 px-6 rounded-xl shadow-lg hover:bg-indigo-700 transition-colors">Save Medication</button>
         </div>
     </div>
     
