@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <link rel="manifest" href="manifest.json">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Health Manager</title>
@@ -80,6 +81,15 @@
         } catch (e) {
             console.error("Firebase Initialization Error:", e);
         }
+        if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/service-worker.js').then(registration => {
+            console.log('Service Worker registered with scope:', registration.scope);
+        }).catch(err => {
+            console.log('Service Worker registration failed:', err);
+        });
+    });
+}
 
         // Set log level for debugging
         if (typeof setLogLevel !== 'undefined') {
@@ -963,3 +973,4 @@
     </div>
 </body>
 </html>
+
