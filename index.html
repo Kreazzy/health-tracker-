@@ -1,7 +1,20 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <!-- Add to your existing head section -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#4f46e5">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Health Tracker">
+<link rel="apple-touch-icon" href="icon-192x192.png">
+  
+  <button id="install-btn" class="hidden no-print bg-green-500 text-white px-3 py-1 rounded-lg text-sm hover:bg-green-600 transition-colors">
+  Install App
+</button>
+  
     <link rel="manifest" href="manifest.json">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>❤️</text></svg>">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Health Manager</title>
@@ -56,8 +69,8 @@
     <!-- Firebase SDKs - Loaded via CDN -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInWithCustomToken, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot, query, where, setLogLevel, deleteDoc, doc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, signInWithCustomToken, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, sendPasswordResetEmail } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, where, setLogLevel, deleteDoc, doc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Global variables provided by the environment
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
@@ -81,15 +94,17 @@
         } catch (e) {
             console.error("Firebase Initialization Error:", e);
         }
+
+        // Service Worker Registration
         if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/service-worker.js').then(registration => {
-            console.log('Service Worker registered with scope:', registration.scope);
-        }).catch(err => {
-            console.log('Service Worker registration failed:', err);
-        });
-    });
-}
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/service-worker.js').then(registration => {
+                    console.log('Service Worker registered with scope:', registration.scope);
+                }).catch(err => {
+                    console.log('Service Worker registration failed:', err);
+                });
+            });
+        }
 
         // Set log level for debugging
         if (typeof setLogLevel !== 'undefined') {
@@ -125,9 +140,10 @@
                     console.log("User authenticated with UID:", user.uid);
                     startListeningForReadings(user.uid);
                     startListeningForMedications(user.uid);
-                    const userEmail = user.email || 'Anonymous';
-                    document.getElementById('current-user-name').textContent = userEmail;
-                    document.getElementById('print-user-name').textContent = userEmail;
+                    // Try to get username, fall back to email
+                    const userName = user.displayName || user.email || 'Anonymous';
+                    document.getElementById('current-user-name').textContent = userName;
+                    document.getElementById('print-user-name').textContent = userName;
                     showScreen('dashboard-screen');
                 } else {
                     console.log("No user authenticated.");
@@ -140,17 +156,19 @@
         async function signUp() {
             const emailInput = document.getElementById('login-email');
             const passwordInput = document.getElementById('login-password');
+            const usernameInput = document.getElementById('login-username');
 
-            if (!emailInput || !passwordInput) {
+            if (!emailInput || !passwordInput || !usernameInput) {
                 showMessageModal("Error", "Required form elements are missing. Please try again.");
                 return;
             }
 
             const email = emailInput.value;
             const password = passwordInput.value;
+            const username = usernameInput.value;
             
-            if (!email || !password) {
-                showMessageModal("Input Error", "Please enter both email and password.");
+            if (!email || !password || !username) {
+                showMessageModal("Input Error", "Please enter all required fields.");
                 return;
             }
             if (!emailRegex.test(email)) {
@@ -167,7 +185,11 @@
             }
             
             try {
-                await createUserWithEmailAndPassword(auth, email, password);
+                const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+                // Update the user profile with the username
+                await updateProfile(userCredential.user, {
+                    displayName: username
+                });
                 showMessageModal("Success", "Account created successfully! You are now logged in.");
             } catch (error) {
                 console.error("Sign-up Error:", error);
@@ -207,6 +229,39 @@
             } catch (error) {
                 console.error("Sign-in Error:", error);
                 showMessageModal("Sign-in Error", `Please check your email and password. Firebase: ${error.message}`);
+            }
+        }
+        
+        // Function to reset password
+        async function resetPassword() {
+            const emailInput = document.getElementById('login-email');
+            
+            if (!emailInput) {
+                showMessageModal("Error", "Email input is missing. Please try again.");
+                return;
+            }
+            
+            const email = emailInput.value;
+            
+            if (!email) {
+                showMessageModal("Input Error", "Please enter your email address.");
+                return;
+            }
+            if (!emailRegex.test(email)) {
+                showMessageModal("Email Format Error", "Please enter a valid email address.");
+                return;
+            }
+            if (!auth) {
+                showMessageModal("Initialization Error", "Firebase Auth is not initialized.");
+                return;
+            }
+            
+            try {
+                await sendPasswordResetEmail(auth, email);
+                showMessageModal("Password Reset", "A password reset email has been sent to your email address.");
+            } catch (error) {
+                console.error("Password Reset Error:", error);
+                showMessageModal("Password Reset Error", `Failed to send password reset email. Firebase: ${error.message}`);
             }
         }
         
@@ -331,6 +386,35 @@
             }
         }
         
+        // Function to update a medication in Firestore
+        async function updateMedication(medicationId) {
+            const userId = auth.currentUser?.uid;
+            if (!db || !userId) return;
+
+            const medicationName = document.getElementById('edit-medication-name').value;
+            const dosage = document.getElementById('edit-medication-dosage').value;
+            const frequency = document.getElementById('edit-medication-frequency').value;
+
+            if (!medicationName || !dosage || !frequency) {
+                showMessageModal("Input Error", "Please fill in all medication fields.");
+                return;
+            }
+
+            try {
+                await updateDoc(doc(db, `artifacts/${appId}/users/${userId}/medications`, medicationId), {
+                    medicationName,
+                    dosage,
+                    frequency,
+                    updatedAt: Date.now()
+                });
+                console.log("Medication updated successfully!");
+                hideModal('edit-medication-modal');
+            } catch (e) {
+                console.error("Error updating medication:", e);
+                showMessageModal("Update Error", "Failed to update medication. Please check permissions and try again.");
+            }
+        }
+        
         // Function to delete a health reading from Firestore
         async function deleteReading(readingId) {
             const userId = auth.currentUser?.uid;
@@ -372,12 +456,17 @@
                 return;
             }
 
-            let dataString = 'Health Records Report\n\n';
-            dataString += `Report for: ${auth.currentUser?.email}\n\n`;
+            let dataString = 'HEALTH RECORDS REPORT\n';
+            dataString += '=====================\n\n';
+            dataString += `Report for: ${auth.currentUser.displayName || auth.currentUser.email}\n`;
+            dataString += `Generated on: ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}\n\n`;
 
             // Add Health Readings
-            dataString += 'Health Readings\n';
-            dataString += 'Type,Value,Date,Time\n';
+            dataString += 'HEALTH READINGS\n';
+            dataString += '────────────────\n';
+            dataString += '| Type       | Value                | Date       | Time     |\n';
+            dataString += '|------------|----------------------|------------|----------|\n';
+            
             allReadings.forEach(reading => {
                 const date = new Date(reading.timestamp).toLocaleDateString();
                 const time = new Date(reading.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
@@ -388,33 +477,32 @@
                     value = `${reading.pulse} bpm`;
                 } else if (reading.type === 'Sugar') {
                     value = `${reading.sugar} mg/dL (${reading.sugarType})`;
+                } else if (reading.type === 'SPO2') {
+                    value = `${reading.spo2}%`;
                 }
-                dataString += `${reading.type},"${value}",${date},${time}\n`;
+                dataString += `| ${reading.type.padEnd(10)} | ${value.padEnd(20)} | ${date.padEnd(10)} | ${time.padEnd(8)} |\n`;
             });
             dataString += '\n';
 
             // Add Medications
-            dataString += 'Medications\n';
-            dataString += 'Medication Name,Dosage,Frequency\n';
+            dataString += 'MEDICATIONS\n';
+            dataString += '───────────\n';
+            dataString += '| Medication Name | Dosage   | Frequency |\n';
+            dataString += '|-----------------|----------|-----------|\n';
+            
             allMedications.forEach(med => {
-                dataString += `${med.medicationName},${med.dosage},${med.frequency}\n`;
+                dataString += `| ${med.medicationName.padEnd(15)} | ${med.dosage.padEnd(8)} | ${med.frequency.padEnd(9)} |\n`;
             });
             
             const blob = new Blob([dataString], { type: 'text/plain;charset=utf-8' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `health-data.txt`;
+            a.download = `health-data-${new Date().toISOString().slice(0,10)}.txt`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
-        }
-        
-        // Function to show the Firebase config
-        function showFirebaseConfig() {
-            const configString = JSON.stringify(firebaseConfig, null, 2);
-            showMessageModal("Firebase Configuration", `<pre class="text-left whitespace-pre-wrap">${configString}</pre>`);
         }
 
         // Helper function to switch between screens
@@ -431,12 +519,13 @@
             // Setup UI interactions
             document.getElementById('signup-btn').addEventListener('click', signUp);
             document.getElementById('login-btn').addEventListener('click', signIn);
+            document.getElementById('reset-password-btn').addEventListener('click', resetPassword);
             document.getElementById('sign-out-btn').addEventListener('click', signOutUser);
-            document.getElementById('show-config-btn').addEventListener('click', showFirebaseConfig);
             
             document.getElementById('open-bp-modal').addEventListener('click', () => showModal('bp-modal'));
             document.getElementById('open-pulse-modal').addEventListener('click', () => showModal('pulse-modal'));
             document.getElementById('open-sugar-modal').addEventListener('click', () => showModal('sugar-modal'));
+            document.getElementById('open-spo2-modal').addEventListener('click', () => showModal('spo2-modal'));
             document.getElementById('open-medication-modal').addEventListener('click', () => showModal('medication-modal'));
             
             document.getElementById('print-report-btn').addEventListener('click', () => {
@@ -458,6 +547,14 @@
                 const systolic = document.getElementById('systolic').value;
                 const diastolic = document.getElementById('diastolic').value;
                 if (systolic && diastolic) {
+                    if (systolic < 50 || systolic > 250) {
+                        showMessageModal("Input Error", "Systolic value should be between 50 and 250 mmHg.");
+                        return;
+                    }
+                    if (diastolic < 30 || diastolic > 150) {
+                        showMessageModal("Input Error", "Diastolic value should be between 30 and 150 mmHg.");
+                        return;
+                    }
                     saveReading('BP', { systolic: parseInt(systolic, 10), diastolic: parseInt(diastolic, 10) });
                     hideModal('bp-modal');
                     document.getElementById('systolic').value = '';
@@ -468,6 +565,10 @@
             document.getElementById('submit-pulse').addEventListener('click', () => {
                 const pulse = document.getElementById('pulse').value;
                 if (pulse) {
+                    if (pulse < 30 || pulse > 250) {
+                        showMessageModal("Input Error", "Pulse value should be between 30 and 250 bpm.");
+                        return;
+                    }
                     saveReading('Pulse', { pulse: parseInt(pulse, 10) });
                     hideModal('pulse-modal');
                     document.getElementById('pulse').value = '';
@@ -478,13 +579,34 @@
                 const sugar = document.getElementById('sugar').value;
                 const sugarType = document.querySelector('input[name="sugar-type"]:checked')?.value;
                 if (sugar && sugarType) {
+                    if (sugar < 20 || sugar > 600) {
+                        showMessageModal("Input Error", "Blood sugar value should be between 20 and 600 mg/dL.");
+                        return;
+                    }
                     saveReading('Sugar', { sugar: parseInt(sugar, 10), sugarType });
                     hideModal('sugar-modal');
                     document.getElementById('sugar').value = '';
                 }
             });
+
+            document.getElementById('submit-spo2').addEventListener('click', () => {
+                const spo2 = document.getElementById('spo2').value;
+                if (spo2) {
+                    if (spo2 < 70 || spo2 > 100) {
+                        showMessageModal("Input Error", "SPO2 value should be between 70 and 100%.");
+                        return;
+                    }
+                    saveReading('SPO2', { spo2: parseInt(spo2, 10) });
+                    hideModal('spo2-modal');
+                    document.getElementById('spo2').value = '';
+                }
+            });
             
             document.getElementById('submit-medication').addEventListener('click', saveMedication);
+            document.getElementById('submit-edit-medication').addEventListener('click', () => {
+                const medicationId = document.getElementById('edit-medication-id').value;
+                updateMedication(medicationId);
+            });
 
             // Tab functionality for charts and tables
             const chartTabBtn = document.getElementById('chart-tab-btn');
@@ -515,12 +637,27 @@
             const bpReadings = readings.filter(r => r.type === 'BP').sort((a, b) => a.timestamp - b.timestamp);
             const pulseReadings = readings.filter(r => r.type === 'Pulse').sort((a, b) => a.timestamp - b.timestamp);
             const sugarReadings = readings.filter(r => r.type === 'Sugar').sort((a, b) => a.timestamp - b.timestamp);
+            const spo2Readings = readings.filter(r => r.type === 'SPO2').sort((a, b) => a.timestamp - b.timestamp);
+
+            // Format dates consistently for chart
+            const formatDate = (timestamp) => {
+                const date = new Date(timestamp);
+                return `${date.getMonth()+1}/${date.getDate()}/${date.getFullYear().toString().slice(-2)}`;
+            };
 
             const allTimestamps = [...new Set([
-                ...bpReadings.map(r => new Date(r.timestamp).toLocaleDateString()),
-                ...pulseReadings.map(r => new Date(r.timestamp).toLocaleDateString()),
-                ...sugarReadings.map(r => new Date(r.timestamp).toLocaleDateString())
-            ])].sort();
+                ...bpReadings.map(r => formatDate(r.timestamp)),
+                ...pulseReadings.map(r => formatDate(r.timestamp)),
+                ...sugarReadings.map(r => formatDate(r.timestamp)),
+                ...spo2Readings.map(r => formatDate(r.timestamp))
+            ])].sort((a, b) => {
+                // Sort dates chronologically
+                const [aMonth, aDay, aYear] = a.split('/').map(Number);
+                const [bMonth, bDay, bYear] = b.split('/').map(Number);
+                const aDate = new Date(2000 + aYear, aMonth - 1, aDay);
+                const bDate = new Date(2000 + bYear, bMonth - 1, bDay);
+                return aDate - bDate;
+            });
 
             const chartConfig = {
                 type: 'line',
@@ -529,7 +666,7 @@
                     datasets: [
                         {
                             label: 'Systolic BP',
-                            data: bpReadings.map(r => ({ x: new Date(r.timestamp).toLocaleDateString(), y: r.systolic })),
+                            data: bpReadings.map(r => ({ x: formatDate(r.timestamp), y: r.systolic })),
                             borderColor: '#4338ca',
                             backgroundColor: 'rgba(67, 56, 202, 0.1)',
                             fill: false,
@@ -537,7 +674,7 @@
                         },
                         {
                             label: 'Diastolic BP',
-                            data: bpReadings.map(r => ({ x: new Date(r.timestamp).toLocaleDateString(), y: r.diastolic })),
+                            data: bpReadings.map(r => ({ x: formatDate(r.timestamp), y: r.diastolic })),
                             borderColor: '#818cf8',
                             backgroundColor: 'rgba(129, 140, 248, 0.1)',
                             fill: false,
@@ -545,7 +682,7 @@
                         },
                         {
                             label: 'Pulse',
-                            data: pulseReadings.map(r => ({ x: new Date(r.timestamp).toLocaleDateString(), y: r.pulse })),
+                            data: pulseReadings.map(r => ({ x: formatDate(r.timestamp), y: r.pulse })),
                             borderColor: '#10b981',
                             backgroundColor: 'rgba(16, 185, 129, 0.1)',
                             fill: false,
@@ -553,11 +690,20 @@
                         },
                         {
                             label: 'Blood Sugar',
-                            data: sugarReadings.map(r => ({ x: new Date(r.timestamp).toLocaleDateString(), y: r.sugar })),
+                            data: sugarReadings.map(r => ({ x: formatDate(r.timestamp), y: r.sugar })),
                             borderColor: '#f59e0b',
                             backgroundColor: 'rgba(245, 158, 11, 0.1)',
                             fill: false,
                             tension: 0.4
+                        },
+                        {
+                            label: 'SPO2',
+                            data: spo2Readings.map(r => ({ x: formatDate(r.timestamp), y: r.spo2 })),
+                            borderColor: '#3b82f6',
+                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                            fill: false,
+                            tension: 0.4,
+                            yAxisID: 'y1'
                         }
                     ]
                 },
@@ -574,11 +720,29 @@
                             }
                         },
                         y: {
+                            type: 'linear',
+                            display: true,
+                            position: 'left',
                             title: {
                                 display: true,
                                 text: 'Reading',
                                 font: { weight: 'bold' }
                             }
+                        },
+                        y1: {
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            title: {
+                                display: true,
+                                text: 'SPO2 (%)',
+                                font: { weight: 'bold' }
+                            },
+                            grid: {
+                                drawOnChartArea: false,
+                            },
+                            min: 70,
+                            max: 100
                         }
                     },
                     plugins: {
@@ -617,6 +781,8 @@
                     valueCell.textContent = `${reading.pulse} bpm`;
                 } else if (reading.type === 'Sugar') {
                     valueCell.textContent = `${reading.sugar} mg/dL (${reading.sugarType})`;
+                } else if (reading.type === 'SPO2') {
+                    valueCell.textContent = `${reading.spo2}%`;
                 }
                 const dateCell = document.createElement('td');
                 dateCell.className = 'py-3 px-4 text-sm text-gray-600';
@@ -659,18 +825,53 @@
             medications.forEach(med => {
                 const row = document.createElement('tr');
                 row.className = 'border-b last:border-b-0';
-                row.innerHTML = `
-                    <td class="py-3 px-4 text-sm font-medium text-gray-900">${med.medicationName}</td>
-                    <td class="py-3 px-4 text-sm text-gray-600">${med.dosage}</td>
-                    <td class="py-3 px-4 text-sm text-gray-600">${med.frequency}</td>
-                    <td class="py-3 px-4 text-right text-sm">
-                        <button class="text-red-500 hover:text-red-700 transition-colors duration-200" onclick="confirmAndDeleteMedication('${med.id}')">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                            </svg>
-                        </button>
-                    </td>
-                `;
+                
+                const nameCell = document.createElement('td');
+                nameCell.className = 'py-3 px-4 text-sm font-medium text-gray-900';
+                nameCell.textContent = med.medicationName;
+                
+                const dosageCell = document.createElement('td');
+                dosageCell.className = 'py-3 px-4 text-sm text-gray-600';
+                dosageCell.textContent = med.dosage;
+                
+                const frequencyCell = document.createElement('td');
+                frequencyCell.className = 'py-3 px-4 text-sm text-gray-600';
+                frequencyCell.textContent = med.frequency;
+                
+                const actionsCell = document.createElement('td');
+                actionsCell.className = 'py-3 px-4 text-right text-sm flex justify-end space-x-2';
+                
+                const editButton = document.createElement('button');
+                editButton.className = 'text-indigo-500 hover:text-indigo-700 transition-colors duration-200';
+                editButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                </svg>`;
+                editButton.onclick = () => {
+                    document.getElementById('edit-medication-id').value = med.id;
+                    document.getElementById('edit-medication-name').value = med.medicationName;
+                    document.getElementById('edit-medication-dosage').value = med.dosage;
+                    document.getElementById('edit-medication-frequency').value = med.frequency;
+                    showModal('edit-medication-modal');
+                };
+                
+                const deleteButton = document.createElement('button');
+                deleteButton.className = 'text-red-500 hover:text-red-700 transition-colors duration-200';
+                deleteButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>`;
+                deleteButton.onclick = () => {
+                    const confirmBtn = document.getElementById('confirm-delete');
+                    confirmBtn.onclick = () => deleteMedication(med.id);
+                    showModal('confirm-delete-modal');
+                };
+                
+                actionsCell.appendChild(editButton);
+                actionsCell.appendChild(deleteButton);
+                
+                row.appendChild(nameCell);
+                row.appendChild(dosageCell);
+                row.appendChild(frequencyCell);
+                row.appendChild(actionsCell);
                 tableBody.appendChild(row);
             });
         }
@@ -715,6 +916,10 @@
 
         <div class="space-y-4">
             <div>
+                <label for="login-username" class="block text-sm font-medium text-gray-700">Username</label>
+                <input type="text" id="login-username" placeholder="Your name" class="w-full p-3 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+            </div>
+            <div>
                 <label for="login-email" class="block text-sm font-medium text-gray-700">Email</label>
                 <input type="email" id="login-email" placeholder="you@example.com" class="w-full p-3 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" />
             </div>
@@ -723,15 +928,11 @@
                 <input type="password" id="login-password" placeholder="********" class="w-full p-3 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" />
             </div>
             <button id="login-btn" class="w-full bg-indigo-600 text-white font-bold py-3 px-6 rounded-xl shadow-lg hover:bg-indigo-700 transition-colors">Sign In</button>
+            <button id="signup-btn" class="w-full bg-green-600 text-white font-bold py-3 px-6 rounded-xl shadow-lg hover:bg-green-700 transition-colors">Sign Up</button>
         </div>
 
-        <div class="mt-6 text-center text-gray-500">
-            <p>Don't have an account?</p>
-            <button id="signup-btn" class="text-indigo-600 font-bold hover:underline transition-colors">Sign up</button>
-        </div>
-        
-        <div class="mt-4 text-center">
-            <button id="show-config-btn" class="text-gray-500 text-sm font-medium hover:underline">Show Firebase Config</button>
+        <div class="mt-6 text-center">
+            <button id="reset-password-btn" class="text-indigo-600 font-bold hover:underline transition-colors">Forgot Password?</button>
         </div>
     </div>
 
@@ -757,10 +958,10 @@
         </div>
 
         <!-- User Options Section -->
-        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-6 mb-8 no-print">
+        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-6 mb-8 no-print">
             <button id="open-bp-modal" class="flex flex-col items-center justify-center p-6 bg-gradient-to-br from-indigo-500 to-purple-600 text-white rounded-2xl shadow-lg hover:shadow-xl transition-all transform hover:scale-105 duration-300">
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m-2-4h2m-4 0a2 2 0 002 2h2a2 2 0 002-2m4 0V9a2 2 0 00-2-2h-2a2 2 0 00-2 2v10a2 2 0 002 2h2a2 2 0 002-2z" />
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m-2-4h2m-4 0a2 2 0 002 2h2a2 2 0 002-2m0 0V9a2 2 0 00-2-2h-2a2 2 0 00-2 2v10a2 2 0 002 2h2a2 2 0 002-2z" />
                 </svg>
                 <span class="text-lg font-semibold">Blood Pressure</span>
             </button>
@@ -775,6 +976,12 @@
                     <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
                 <span class="text-lg font-semibold">Blood Sugar</span>
+            </button>
+            <button id="open-spo2-modal" class="flex flex-col items-center justify-center p-6 bg-gradient-to-br from-blue-500 to-indigo-600 text-white rounded-2xl shadow-lg hover:shadow-xl transition-all transform hover:scale-105 duration-300">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M18.364 5.636l-3.536 3.536m0 5.656l3.536 3.536M9.172 9.172L5.636 5.636m3.536 9.192l-3.536 3.536M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-5 0a4 4 0 11-8 0 4 4 0 018 0z" />
+                </svg>
+                <span class="text-lg font-semibold">SPO2</span>
             </button>
             <button id="open-medication-modal" class="flex flex-col items-center justify-center p-6 bg-gradient-to-br from-gray-500 to-gray-600 text-white rounded-2xl shadow-lg hover:shadow-xl transition-all transform hover:scale-105 duration-300">
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -845,6 +1052,11 @@
                     </tbody>
                 </table>
             </div>
+        </div>
+        
+        <!-- Footer -->
+        <div class="mt-8 text-center text-gray-500 no-print">
+            <p>Made with ❤️ via KREAZZY</p>
         </div>
     </div>
 
@@ -918,6 +1130,23 @@
         </div>
     </div>
     
+    <!-- SPO2 Modal -->
+    <div id="spo2-modal" class="modal fixed inset-0 z-50 flex items-center justify-center bg-gray-900 bg-opacity-50 hidden no-print">
+        <div class="bg-white rounded-3xl p-8 md:p-10 max-w-lg w-full shadow-2xl relative transform scale-100">
+            <button class="close-modal-btn absolute top-4 right-4 text-gray-400 hover:text-gray-600 transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+            </button>
+            <h3 class="text-2xl font-bold mb-6 text-gray-800">Add SPO2 Reading</h3>
+            <div class="mb-6">
+                <label for="spo2" class="block text-sm font-medium text-gray-700 mb-2">SPO2 (%)</label>
+                <input type="number" id="spo2" placeholder="e.g., 98" class="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-colors" />
+            </div>
+            <button id="submit-spo2" class="w-full bg-indigo-600 text-white font-bold py-3 px-6 rounded-xl shadow-lg hover:bg-indigo-700 transition-colors">Save Reading</button>
+        </div>
+    </div>
+    
     <!-- Medication Modal -->
     <div id="medication-modal" class="modal fixed inset-0 z-50 flex items-center justify-center bg-gray-900 bg-opacity-50 hidden no-print">
         <div class="bg-white rounded-3xl p-8 md:p-10 max-w-lg w-full shadow-2xl relative transform scale-100">
@@ -942,6 +1171,34 @@
                 </div>
             </div>
             <button id="submit-medication" class="w-full bg-indigo-600 text-white font-bold py-3 px-6 rounded-xl shadow-lg hover:bg-indigo-700 transition-colors">Save Medication</button>
+        </div>
+    </div>
+    
+    <!-- Edit Medication Modal -->
+    <div id="edit-medication-modal" class="modal fixed inset-0 z-50 flex items-center justify-center bg-gray-900 bg-opacity-50 hidden no-print">
+        <div class="bg-white rounded-3xl p-8 md:p-10 max-w-lg w-full shadow-2xl relative transform scale-100">
+            <button class="close-modal-btn absolute top-4 right-4 text-gray-400 hover:text-gray-600 transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+            </button>
+            <h3 class="text-2xl font-bold mb-6 text-gray-800">Edit Medication</h3>
+            <input type="hidden" id="edit-medication-id">
+            <div class="space-y-4 mb-6">
+                <div>
+                    <label for="edit-medication-name" class="block text-sm font-medium text-gray-700">Medication Name</label>
+                    <input type="text" id="edit-medication-name" placeholder="e.g., Aspirin" class="w-full p-3 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                </div>
+                <div>
+                    <label for="edit-medication-dosage" class="block text-sm font-medium text-gray-700">Dosage</label>
+                    <input type="text" id="edit-medication-dosage" placeholder="e.g., 81 mg" class="w-full p-3 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                </div>
+                <div>
+                    <label for="edit-medication-frequency" class="block text-sm font-medium text-gray-700">Frequency</label>
+                    <input type="text" id="edit-medication-frequency" placeholder="e.g., Daily" class="w-full p-3 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                </div>
+            </div>
+            <button id="submit-edit-medication" class="w-full bg-indigo-600 text-white font-bold py-3 px-6 rounded-xl shadow-lg hover:bg-indigo-700 transition-colors">Update Medication</button>
         </div>
     </div>
     
@@ -971,6 +1228,48 @@
             </div>
         </div>
     </div>
+  
+  <script>
+  // Register service worker
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/service-worker.js')
+        .then(registration => {
+          console.log('SW registered: ', registration);
+        })
+        .catch(registrationError => {
+          console.log('SW registration failed: ', registrationError);
+        });
+    });
+  }
+
+  // Handle before install prompt
+  let deferredPrompt;
+  const installButton = document.getElementById('install-btn');
+  
+  window.addEventListener('beforeinstallprompt', (e) => {
+    // Prevent the mini-infobar from appearing on mobile
+    e.preventDefault();
+    // Stash the event so it can be triggered later
+    deferredPrompt = e;
+    // Show install button if it exists
+    if (installButton) {
+      installButton.style.display = 'block';
+      installButton.addEventListener('click', () => {
+        // Show the install prompt
+        deferredPrompt.prompt();
+        // Wait for the user to respond to the prompt
+        deferredPrompt.userChoice.then((choiceResult) => {
+          if (choiceResult.outcome === 'accepted') {
+            console.log('User accepted the install prompt');
+          } else {
+            console.log('User dismissed the install prompt');
+          }
+          deferredPrompt = null;
+        });
+      });
+    }
+  });
+</script>
 </body>
 </html>
-
